@@ -1,7 +1,8 @@
 (library
  (name melange_json)
  (public_name melange-json-native)
- (libraries yojson))
+ (libraries extlib yojson)
+ (flags :standard -open ExtLib))
 
 (copy_files
  (files ../errors.ml))
