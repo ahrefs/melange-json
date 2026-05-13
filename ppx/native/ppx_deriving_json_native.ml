@@ -137,6 +137,66 @@ module Of_json = struct
     | Vcs_tuple (n, t) when vcs_attr_json_allow_any t.tpl_ctx ->
         let loc = n.loc in
         [%pat? _] --> make (Some [%expr x])
+    | Vcs_tuple (n, t) when vcs_attr_json_open_enum t.tpl_ctx ->
+        let loc = n.loc in
+        (match t.tpl_types with
+         | [ { ptyp_desc = Ptyp_constr ({ txt = Lident "string"; _ }, []); _ } ] ->
+             (* Tag-only form: `of string` captures any unknown string tag.
+                Matches atdgen's `<json open_enum>` wire behaviour exactly
+                (bare strings; array-form unknowns are caught too, payload
+                dropped). Useful for migrating legacy atd types. *)
+             [%pat? `String x | `List (`String x :: _)]
+             --> make (Some [%expr x])
+         | [ _ ] ->
+             (* Single non-string arg: assumed to be a record type with
+                fields `tag` and `payload`. Preserves unknown-variant
+                payload for forward-compat. *)
+             [%pat? (`String _ | `List (`String _ :: _)) as v]
+             --> [%expr
+                   let tag =
+                     match v with
+                     | `String s -> s
+                     | `List (`String s :: _) -> s
+                     | _ -> assert false
+                   in
+                   let payload =
+                     match v with
+                     | `String _ -> Stdlib.Option.None
+                     | `List (_ :: rest) -> Stdlib.Option.Some rest
+                     | _ -> assert false
+                   in
+                   [%e make (Some [%expr { tag; payload }])]]
+         | _ ->
+             Location.raise_errorf ~loc
+               "[@json.open_enum] requires exactly one argument: \
+                `of string` (tag-only), or a record type with fields \
+                { tag : string; payload : Yojson.Basic.t list option } \
+                (payload-preserving)")
+    | Vcs_record (_n, t) when vcs_attr_json_open_enum t.rcd_ctx ->
+        let loc = t.rcd_loc in
+        (match t.rcd_fields with
+         | [ { pld_name = { txt = "tag"; _ }; _ };
+             { pld_name = { txt = "payload"; _ }; _ } ] ->
+             [%pat? (`String _ | `List (`String _ :: _)) as v]
+             --> [%expr
+                   let tag =
+                     match v with
+                     | `String s -> s
+                     | `List (`String s :: _) -> s
+                     | _ -> assert false
+                   in
+                   let payload =
+                     match v with
+                     | `String _ -> Stdlib.Option.None
+                     | `List (_ :: rest) -> Stdlib.Option.Some rest
+                     | _ -> assert false
+                   in
+                   [%e make (Some [%expr { tag; payload }])]]
+         | _ ->
+             Location.raise_errorf ~loc
+               "[@json.open_enum] inline record must have exactly two \
+                fields named `tag` and `payload` (in that order), with \
+                types `string` and `Yojson.Basic.t list option`")
     | Vcs_tuple (n, t) ->
         let loc = n.loc in
         let n = Option.value ~default:n (vcs_attr_json_name t.tpl_ctx) in
@@ -164,16 +224,21 @@ module Of_json = struct
         --> build_record ~allow_extra_fields ~loc derive t.rcd_fields
               [%expr fs] (fun e -> make (Some e))
 
+  (* Sort key for variant cases. Smaller = visited earlier by the
+     fold-left in [deriving_of_match], which means it ends up *later* in
+     the generated [match …] cases (the fold prepends). So we want the
+     widest catch-alls to come first here:
+       - [@json.allow_any] (catches any JSON)
+       - [@json.open_enum] (catches any string)
+       - specific constructor cases
+   *)
   let cmp_sort_vcs vcs1 vcs2 =
-    let allow_any_1 =
-      Ppx_deriving_json_common.vcs_attr_json_allow_any vcs1
-    and allow_any_2 =
-      Ppx_deriving_json_common.vcs_attr_json_allow_any vcs2
+    let key vcs =
+      if Ppx_deriving_json_common.vcs_attr_json_allow_any vcs then 0
+      else if Ppx_deriving_json_common.vcs_attr_json_open_enum vcs then 1
+      else 2
     in
-    match allow_any_1, allow_any_2 with
-    | true, true | false, false -> 0
-    | true, false -> -1
-    | false, true -> 1
+    compare (key vcs1) (key vcs2)
 
   let deriving : Ppx_deriving_tools.deriving =
     deriving_of_match () ~name:"of_json"
@@ -241,6 +306,41 @@ module To_json = struct
             failwith
               (sprintf "expected a tuple of length 1, got %i"
                  (List.length es)))
+    | Vcs_tuple (n, t) when vcs_attr_json_open_enum t.tpl_ctx -> (
+        let loc = n.loc in
+        match t.tpl_types, es with
+        | ( [ { ptyp_desc = Ptyp_constr ({ txt = Lident "string"; _ }, []); _ } ],
+            [ x ] ) ->
+            (* Tag-only form: emit a bare JSON string. *)
+            [%expr `String [%e x]]
+        | [ _ ], [ arg_e ] ->
+            [%expr
+              match [%e arg_e].payload with
+              | Stdlib.Option.None -> `String [%e arg_e].tag
+              | Stdlib.Option.Some xs ->
+                  `List (`String [%e arg_e].tag :: xs)]
+        | _ ->
+            Location.raise_errorf ~loc
+              "[@json.open_enum] requires exactly one argument: \
+               `of string` (tag-only), or a record type with fields \
+               { tag : string; payload : Yojson.Basic.t list option } \
+               (payload-preserving)")
+    | Vcs_record (_n, t) when vcs_attr_json_open_enum t.rcd_ctx -> (
+        let loc = t.rcd_loc in
+        match t.rcd_fields, es with
+        | ( [ { pld_name = { txt = "tag"; _ }; _ };
+              { pld_name = { txt = "payload"; _ }; _ } ],
+            [ tag_e; payload_e ] ) ->
+            [%expr
+              match [%e payload_e] with
+              | Stdlib.Option.None -> `String [%e tag_e]
+              | Stdlib.Option.Some xs ->
+                  `List (`String [%e tag_e] :: xs)]
+        | _ ->
+            Location.raise_errorf ~loc
+              "[@json.open_enum] inline record must have exactly two \
+               fields named `tag` and `payload` (in that order), with \
+               types `string` and `Yojson.Basic.t list option`")
     | Vcs_tuple (n, t) ->
         let loc = n.loc in
         let n = Option.value ~default:n (vcs_attr_json_name t.tpl_ctx) in

@@ -424,6 +424,55 @@ This also works for polyvariant types:
 type t = [`A | `B of int] [@@deriving json] [@@json.compact_variants]
 ```
 
+#### `[@json.open_enum]`: catch-all constructor for unknown string tags
+
+The `[@json.open_enum]` attribute marks a constructor as a catch-all for any
+unrecognised string tag. The catch-all constructor's argument must be a record
+with fields `tag : string` and `payload : Melange_json.t list option`. The
+decoder routes bare unknown strings *and* unknown array variants — including
+their payload — into this constructor; the encoder re-emits the exact wire
+shape, so decoding/encoding round-trips.
+
+Pairs naturally with `[@@json.compact_variants]` so the known cases are also
+bare strings.
+
+##### Sum types — inline record
+
+```ocaml
+type evt =
+  | Login [@json.name "login"]
+  | Click of int [@json.name "click"]
+  | Unknown of { tag : string; payload : Melange_json.t list option }
+    [@json.open_enum]
+[@@deriving json] [@@json.compact_variants]
+```
+
+##### Polyvariants — named record
+
+If you want to share one record type across several polyvariants, declare it
+yourself and reference it explicitly:
+
+```ocaml
+type unknown_payload =
+  { tag : string; payload : Melange_json.t list option }
+
+type evt = [
+  | `Login [@json.name "login"]
+  | `Click of int [@json.name "click"]
+  | `Unknown of unknown_payload [@json.open_enum]
+] [@@deriving json] [@@json.compact_variants]
+```
+
+##### Wire shape mapping
+
+`payload` distinguishes the wire shape so the value round-trips faithfully:
+
+| Wire JSON               | Decoded                                                   | Re-encodes as          |
+|-------------------------|-----------------------------------------------------------|------------------------|
+| `"future_tag"`          | `{ tag = "future_tag"; payload = None }`                  | `"future_tag"`         |
+| `["future_tag"]`        | `{ tag = "future_tag"; payload = Some [] }`               | `["future_tag"]`       |
+| `["future_tag", 42]`    | `{ tag = "future_tag"; payload = Some [`Int 42] }`        | `["future_tag", 42]`   |
+
 #### `[@@deriving json_string]`: a shortcut for JSON string conversion
 
 For convenience, one can use `[@@deriving json_string]` to generate converters

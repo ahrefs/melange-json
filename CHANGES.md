@@ -1,5 +1,23 @@
 ## Unreleased
 
+- PPX: Add `[@json.open_enum]` attribute, marking a constructor as a
+  catch-all for any unrecognised string tag. The catch-all's argument is
+  a record with fields `tag : string` and
+  `payload : Melange_json.t list option`. `payload` distinguishes bare
+  strings (`None`) from array forms (`Some xs`), preserving the wire
+  shape for round-trip-faithful decoding/encoding even when a future
+  producer adds payload-bearing variants. Three forms are accepted:
+  - **Sum type inline record:**
+    `Other of { tag : string; payload : Melange_json.t list option } [@json.open_enum]`
+  - **Polyvariant, user-provided record:**
+    `\`Other of <record_type> [@json.open_enum]` — the record type is
+    defined separately.
+  - **Polyvariant, auto-generated record:**
+    `\`Other [@json.open_enum]` on a 0-arity tag — the PPX synthesises
+    a record type `<typename>_open_enum` and rewrites the tag to take
+    it as an argument.
+
+  Pairs naturally with `[@@json.compact_variants]`.
 - PPX: Add `[@@json.compact_variants]` attribute for variant and polyvariant
   types. Encodes constructors without arguments as plain JSON strings and
   constructors with arguments as JSON arrays `["ConstructorName", arg1, ...]`.

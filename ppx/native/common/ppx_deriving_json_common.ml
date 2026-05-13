@@ -35,6 +35,24 @@ let vcs_attr_json_allow_any =
     | None -> false
     | Some () -> true
 
+(* [@json.open_enum] marks a single-string-argument variant constructor as a
+   catch-all for any unrecognised string tag. The decoder routes both bare
+   unknown strings and unknown array variants ["future_tag", ...] to this
+   constructor (in the array case any payload is dropped). The encoder writes
+   the value back as a bare JSON string. Pairs naturally with
+   [@@json.compact_variants] so the known cases are also bare strings. *)
+let attr_json_open_enum ctx = Attribute.declare_flag "json.open_enum" ctx
+
+let vcs_attr_json_open_enum =
+  let variant =
+    attr_json_open_enum Attribute.Context.constructor_declaration
+  in
+  let polyvariant = attr_json_open_enum Attribute.Context.rtag in
+  fun ?mark_as_seen ctx ->
+    match get_of_variant_case ~variant ~polyvariant ?mark_as_seen ctx with
+    | None -> false
+    | Some () -> true
+
 let ld_attr_json_key =
   Attribute.get
     (Attribute.declare "json.key" Attribute.Context.label_declaration
